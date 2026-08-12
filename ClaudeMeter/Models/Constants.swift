@@ -50,8 +50,8 @@ enum Constants {
         /// Base delay multiplier for exponential backoff (network errors)
         static let backoffBase: Double = 2.0
 
-        /// Base delay multiplier for rate limit backoff (more aggressive)
-        static let rateLimitBackoffBase: Double = 3.0
+        /// Fallback cooldown when a provider rate-limits without a `Retry-After`.
+        static let defaultRateLimitCooldown: TimeInterval = 15 * 60
     }
 
     /// Refresh intervals (in seconds)

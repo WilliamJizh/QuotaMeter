@@ -23,6 +23,20 @@ actor UsageService: UsageServiceProtocol {
     /// explicitly whenever the stored credential changes.
     private var cachedKey: String?
 
+    /// Suppresses every upstream call until this instant.
+    ///
+    /// Anthropic answers a rate limit with `Retry-After` (~27 minutes in
+    /// practice). Continuing to poll through that window does not get data any
+    /// sooner and keeps the limit alive, so nothing is sent until it expires.
+    private var rateLimitedUntil: Date?
+
+    /// How long the current cooldown still has to run, if any.
+    var rateLimitCooldown: TimeInterval? {
+        guard let rateLimitedUntil else { return nil }
+        let remaining = rateLimitedUntil.timeIntervalSinceNow
+        return remaining > 0 ? remaining : nil
+    }
+
     init(
         transport: ManagementTransportProtocol,
         cacheRepository: CacheRepositoryProtocol,
@@ -40,6 +54,16 @@ actor UsageService: UsageServiceProtocol {
     func fetchUsage(forceRefresh: Bool) async throws -> UsageData {
         let endpoint = try await resolveEndpoint()
 
+        // A cooldown outranks forceRefresh: the user tapping refresh must not be
+        // able to keep the rate limit alive.
+        if let cooldown = rateLimitCooldown {
+            if let lastKnown = await cacheRepository.getLastKnown() {
+                Self.logger.info("rate limited, serving cached data for another \(cooldown, privacy: .public)s")
+                return lastKnown
+            }
+            throw ManagementError.rateLimited(retryAfter: cooldown)
+        }
+
         if forceRefresh {
             await cacheRepository.invalidate()
         }
@@ -51,6 +75,7 @@ actor UsageService: UsageServiceProtocol {
         do {
             entries = try await withRetry { try await self.transport.authFiles(endpoint: endpoint) }
         } catch {
+            noteRateLimitIfNeeded(error)
             // Listing failed, so we know nothing about any account. Fall back to
             // the last good snapshot rather than blanking the menu bar.
             if let lastKnown = await cacheRepository.getLastKnown() {
@@ -74,6 +99,11 @@ actor UsageService: UsageServiceProtocol {
                 collected.append(account)
             }
             return collected
+        }
+
+        if accounts.allSatisfy(\.isFailed), rateLimitCooldown != nil,
+           let lastKnown = await cacheRepository.getLastKnown() {
+            return lastKnown
         }
 
         let data = UsageData(accounts: accounts, lastUpdated: Date())
@@ -110,6 +140,7 @@ actor UsageService: UsageServiceProtocol {
                 return try await fetchCodex(entry: entry, endpoint: endpoint)
             }
         } catch {
+            noteRateLimitIfNeeded(error)
             Self.logger.error("\(entry.displayLabel, privacy: .public): \(error.localizedDescription)")
             return AccountUsage(
                 id: entry.authIndex,
@@ -199,13 +230,7 @@ actor UsageService: UsageServiceProtocol {
                 return try await operation()
             } catch let error as ManagementError where error.isTransient {
                 lastError = error
-                let base = {
-                    if case .upstreamStatus(let code, _) = error, code == 429 {
-                        return Constants.Network.rateLimitBackoffBase
-                    }
-                    return Constants.Network.backoffBase
-                }()
-                let delay = pow(base, Double(attempt))
+                let delay = pow(Constants.Network.backoffBase, Double(attempt))
                 Self.logger.warning("Transient failure, retrying in \(delay, privacy: .public)s")
                 try? await Task.sleep(for: .seconds(delay))
             } catch {
@@ -218,6 +243,22 @@ actor UsageService: UsageServiceProtocol {
 
     func invalidateCredentialCache() {
         cachedKey = nil
+    }
+
+    /// Starts (or extends) the cooldown when the provider reports a rate limit.
+    ///
+    /// Without a `Retry-After` we still stand down for a conservative default —
+    /// polling blind through an unknown limit is what causes it to persist.
+    private func noteRateLimitIfNeeded(_ error: Error) {
+        guard let managementError = error as? ManagementError,
+              case .rateLimited(let retryAfter) = managementError else { return }
+
+        let wait = retryAfter ?? Constants.Network.defaultRateLimitCooldown
+        let deadline = Date().addingTimeInterval(wait)
+        if let existing = rateLimitedUntil, existing > deadline { return }
+
+        rateLimitedUntil = deadline
+        Self.logger.warning("rate limited, pausing all upstream calls for \(wait, privacy: .public)s")
     }
 
     private func resolveEndpoint() async throws -> ManagementEndpoint {

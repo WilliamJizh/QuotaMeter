@@ -27,18 +27,40 @@ final class ManagementEnvelopeTests: XCTestCase {
 
     /// The passthrough answers HTTP 200 even when the provider refused, so a
     /// non-2xx inner status must surface as an error rather than a decode failure.
-    func test_throwsOnInnerRateLimitDespiteOuterSuccess() throws {
+    func test_throwsRateLimitedOnInnerRateLimitDespiteOuterSuccess() throws {
         XCTAssertThrowsError(try unwrap(#"{"status_code":429,"body":"{\"error\":\"slow down\"}"}"#)) { error in
-            guard case ManagementError.upstreamStatus(let code, let body) = error else {
-                return XCTFail("Expected upstreamStatus, got \(error)")
+            guard case ManagementError.rateLimited = error else {
+                return XCTFail("Expected rateLimited, got \(error)")
             }
-            XCTAssertEqual(code, 429)
-            XCTAssertTrue(body.contains("slow down"))
         }
     }
 
-    func test_rateLimitIsTreatedAsTransient() throws {
-        XCTAssertTrue(ManagementError.upstreamStatus(code: 429, body: "").isTransient)
+    /// The provider's own `Retry-After` is what the cooldown is built on.
+    func test_extractsRetryAfterFromEnvelopeHeaders() throws {
+        XCTAssertThrowsError(
+            try unwrap(#"{"status_code":429,"header":{"Retry-After":["1647"]},"body":"{}"}"#)
+        ) { error in
+            XCTAssertEqual((error as? ManagementError)?.retryAfter, 1647)
+        }
+    }
+
+    func test_extractsRetryAfterCaseInsensitively() throws {
+        XCTAssertThrowsError(
+            try unwrap(#"{"status_code":429,"header":{"retry-after":"90"},"body":"{}"}"#)
+        ) { error in
+            XCTAssertEqual((error as? ManagementError)?.retryAfter, 90)
+        }
+    }
+
+    func test_rateLimitWithoutRetryAfterHasNoHint() throws {
+        XCTAssertThrowsError(try unwrap(#"{"status_code":429,"body":"{}"}"#)) { error in
+            XCTAssertNil((error as? ManagementError)?.retryAfter)
+        }
+    }
+
+    /// Retrying a 429 in-process is the one thing guaranteed to prolong it.
+    func test_rateLimitIsNotRetriedInProcess() throws {
+        XCTAssertFalse(ManagementError.rateLimited(retryAfter: 60).isTransient)
         XCTAssertTrue(ManagementError.upstreamStatus(code: 503, body: "").isTransient)
     }
 

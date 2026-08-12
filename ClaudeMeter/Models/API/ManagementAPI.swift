@@ -62,6 +62,9 @@ enum ManagementError: LocalizedError {
     case invalidBaseURL(String)
     case panelUnreachable(underlying: Error)
     case missingBody
+    /// The provider rate-limited us. `retryAfter` is its own `Retry-After`, in
+    /// seconds, when it supplied one.
+    case rateLimited(retryAfter: TimeInterval?)
     /// The passthrough itself succeeded but the upstream provider returned non-2xx.
     case upstreamStatus(code: Int, body: String)
 
@@ -75,29 +78,52 @@ enum ManagementError: LocalizedError {
             return "Can't reach CLIProxyAPI. Is the daemon running?"
         case .missingBody:
             return "The server returned an empty response."
+        case .rateLimited(let retryAfter):
+            guard let retryAfter, retryAfter > 0 else {
+                return "Provider rate limit reached. Waiting before retrying."
+            }
+            return "Provider rate limit reached. Retrying in \(Self.formatWait(retryAfter))."
         case .upstreamStatus(let code, _):
             switch code {
             case 401, 403:
                 return "Credential rejected (\(code)). Re-authenticate it in the management panel."
             case 404:
                 return "Usage endpoint not found (404). The daemon may need updating."
-            case 429:
-                return "Provider rate limit hit (429). Backing off."
             default:
                 return "Provider returned status \(code)."
             }
         }
     }
 
-    /// Whether retrying without user intervention could plausibly help.
+    /// Whether an immediate in-process retry could plausibly help.
+    ///
+    /// Deliberately excludes rate limiting: retrying a 429 seconds later is the
+    /// one thing guaranteed to prolong it. That case is handled by a cooldown
+    /// instead, honouring the provider's `Retry-After`.
     var isTransient: Bool {
         switch self {
         case .panelUnreachable:
             return true
         case .upstreamStatus(let code, _):
-            return code == 429 || (500...599).contains(code)
-        case .notConfigured, .invalidBaseURL, .missingBody:
+            return (500...599).contains(code)
+        case .rateLimited, .notConfigured, .invalidBaseURL, .missingBody:
             return false
         }
+    }
+
+    /// How long the provider asked us to wait, if it said.
+    var retryAfter: TimeInterval? {
+        guard case .rateLimited(let retryAfter) = self else { return nil }
+        return retryAfter
+    }
+
+    static func formatWait(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded(.up))
+        if total < 60 { return "\(total)s" }
+        let minutes = Int((seconds / 60).rounded(.up))
+        if minutes < 60 { return "\(minutes) min" }
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        return remainder == 0 ? "\(hours)h" : "\(hours)h \(remainder)m"
     }
 }

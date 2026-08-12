@@ -80,6 +80,9 @@ actor ManagementTransport: ManagementTransportProtocol {
 
         guard (200...299).contains(statusCode) else {
             let description = bodyData.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            if statusCode == 429 {
+                throw ManagementError.rateLimited(retryAfter: retryAfterSeconds(in: root))
+            }
             throw ManagementError.upstreamStatus(code: statusCode, body: description)
         }
 
@@ -88,6 +91,27 @@ actor ManagementTransport: ManagementTransportProtocol {
         }
 
         return bodyData
+    }
+
+    /// Pulls `Retry-After` out of the envelope's captured response headers.
+    ///
+    /// The daemon reports header values as arrays, and header names are
+    /// case-insensitive upstream, so both are handled here.
+    static func retryAfterSeconds(in root: [String: Any]) -> TimeInterval? {
+        guard let headers = root["header"] as? [String: Any] else { return nil }
+
+        for (name, value) in headers where name.lowercased() == "retry-after" {
+            let raw: String?
+            switch value {
+            case let list as [Any]: raw = list.first.map { String(describing: $0) }
+            case let text as String: raw = text
+            default: raw = String(describing: value)
+            }
+            if let raw, let seconds = TimeInterval(raw.trimmingCharacters(in: .whitespaces)), seconds > 0 {
+                return seconds
+            }
+        }
+        return nil
     }
 
     // MARK: - Private

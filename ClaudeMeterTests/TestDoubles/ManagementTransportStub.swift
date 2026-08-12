@@ -32,6 +32,10 @@ actor ManagementTransportStub: ManagementTransportProtocol {
         self.errors = errors
     }
 
+    func setError(_ error: Error, for url: String) {
+        errors[url] = error
+    }
+
     func authFiles(endpoint: ManagementEndpoint) async throws -> [AuthFileEntry] {
         authFilesCallCount += 1
         if let authFilesError {
