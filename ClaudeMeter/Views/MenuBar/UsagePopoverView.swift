@@ -12,6 +12,48 @@ struct UsagePopoverView: View {
     let onRequestClose: (() -> Void)?
     @Environment(\.openSettings) private var openSettings
 
+    /// Two account cards per row at the popover's width. Cards in a row size to
+    /// the tallest, which keeps the grid tidy when accounts have different
+    /// numbers of windows.
+    static let width = PopoverMetrics.width
+    private static let columnCount = PopoverMetrics.columnCount
+
+    /// Sizes the popover to what is actually being shown, so two accounts do not
+    /// leave a screen of empty space and eight still scroll.
+    private var popoverHeight: CGFloat {
+        PopoverMetrics.popoverHeight(windowCountsPerRow: accountRows.map { row in
+            row.accounts.map(visibleWindowCount).max() ?? 1
+        })
+    }
+
+    /// Accounts chunked into grid rows.
+    private struct AccountRow: Identifiable {
+        let id: String
+        let accounts: [AccountUsage]
+        /// Tallest card in the row, which every card in it adopts.
+        let height: CGFloat
+    }
+
+    private var accountRows: [AccountRow] {
+        let accounts = visibleAccounts
+        return stride(from: 0, to: accounts.count, by: Self.columnCount).map { start in
+            let slice = Array(accounts[start..<min(start + Self.columnCount, accounts.count)])
+            let windows = slice.map(visibleWindowCount).max() ?? 1
+            return AccountRow(
+                id: slice.map(\.id).joined(separator: "|"),
+                accounts: slice,
+                height: PopoverMetrics.cardHeight(windowCount: windows)
+            )
+        }
+    }
+
+    /// Bars a card will draw, with failed accounts counted as one message line.
+    private func visibleWindowCount(_ account: AccountUsage) -> Int {
+        if account.isFailed { return 1 }
+        let windows = appModel.settings.areAllWindowsShown ? account.windows : account.primaryWindows
+        return max(windows.count, 1)
+    }
+
     private var visibleAccounts: [AccountUsage] {
         (appModel.usageData?.sortedAccounts ?? [])
             .filter { appModel.settings.isVisible($0.provider) }
@@ -32,7 +74,7 @@ struct UsagePopoverView: View {
             Divider()
             footer
         }
-        .frame(width: 340, height: 460)
+        .frame(width: Self.width, height: popoverHeight)
         .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Quota Dashboard")
@@ -103,15 +145,28 @@ struct UsagePopoverView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
-                VStack(spacing: 6) {
-                    ForEach(visibleAccounts) { account in
-                        AccountCardView(
-                            account: account,
-                            showsAllWindows: appModel.settings.areAllWindowsShown
-                        )
+                // `Grid` rather than `LazyVGrid`: only Grid stretches cells to
+                // their row's height, so cards in a row share a bottom edge
+                // instead of stair-stepping.
+                Grid(alignment: .topLeading, horizontalSpacing: PopoverMetrics.gridSpacing, verticalSpacing: PopoverMetrics.gridSpacing) {
+                    ForEach(accountRows, id: \.id) { row in
+                        GridRow {
+                            ForEach(row.accounts) { account in
+                                AccountCardView(
+                                    account: account,
+                                    showsAllWindows: appModel.settings.areAllWindowsShown,
+                                    fixedHeight: row.height
+                                )
+                            }
+                            // Keeps a lone trailing card at column width instead
+                            // of letting it span the row.
+                            if row.accounts.count < Self.columnCount {
+                                Color.clear
+                            }
+                        }
                     }
                 }
-                .padding(10)
+                .padding(PopoverMetrics.gridPadding)
             }
         }
     }
@@ -158,8 +213,8 @@ struct UsagePopoverView: View {
                 .keyboardShortcut("q", modifiers: .command)
                 .accessibilityLabel("Quit application")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     private func openSettingsFront() {
