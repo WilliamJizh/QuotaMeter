@@ -110,6 +110,31 @@ extension UsageLimit {
         count == 1 ? singular : "\(singular)s"
     }
 
+    /// Terse reset countdown for the grid cells, e.g. `13h`, `6d 18h`.
+    ///
+    /// The long form ("in 6 days 18 hours") does not fit a half-width cell, and
+    /// the exact instant is still available on hover.
+    var compactResetDescription: String {
+        let remaining = resetAt.timeIntervalSinceNow
+        guard remaining > 0 else { return "now" }
+
+        let minute: TimeInterval = 60
+        let hour: TimeInterval = 60 * minute
+        let day: TimeInterval = 24 * hour
+
+        if remaining < hour {
+            return "\(max(1, Int(ceil(remaining / minute))))m"
+        }
+        if remaining < day {
+            return "\(Int(ceil(remaining / hour)))h"
+        }
+
+        let totalHours = Int(ceil(remaining / hour))
+        let days = totalHours / 24
+        let hours = totalHours % 24
+        return hours == 0 ? "\(days)d" : "\(days)d \(hours)h"
+    }
+
     /// Exact reset time formatted in user's timezone for tooltip display
     var resetTimeFormatted: String {
         let formatter = DateFormatter()

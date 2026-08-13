@@ -32,7 +32,7 @@ struct UsagePopoverView: View {
             Divider()
             footer
         }
-        .frame(width: 340, height: 480)
+        .frame(width: 340, height: 460)
         .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Quota Dashboard")
@@ -103,7 +103,7 @@ struct UsagePopoverView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
-                VStack(spacing: 10) {
+                VStack(spacing: 6) {
                     ForEach(visibleAccounts) { account in
                         AccountCardView(
                             account: account,
@@ -111,7 +111,7 @@ struct UsagePopoverView: View {
                         )
                     }
                 }
-                .padding(12)
+                .padding(10)
             }
         }
     }

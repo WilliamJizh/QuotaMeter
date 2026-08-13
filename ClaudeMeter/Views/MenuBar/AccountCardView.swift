@@ -5,49 +5,53 @@
 
 import SwiftUI
 
-/// One credential's card: provider badge, plan tier, and a row per window.
+/// One credential's card: provider badge, plan tier, and a grid of its windows.
 struct AccountCardView: View {
     let account: AccountUsage
     let showsAllWindows: Bool
+
+    /// Two columns at the popover's width, more if it ever gets wider. Stacking
+    /// windows full-width meant barely two accounts fit on screen.
+    private let columns = [GridItem(.adaptive(minimum: 132), spacing: 6)]
 
     private var visibleWindows: [UsageWindow] {
         showsAllWindows ? account.windows : account.primaryWindows
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             header
 
             if let errorMessage = account.errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundColor(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             } else if visibleWindows.isEmpty {
                 Text("No quota windows reported.")
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundColor(.secondary)
             } else {
-                VStack(spacing: 8) {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 5) {
                     ForEach(visibleWindows) { window in
-                        WindowRowView(window: window)
+                        WindowCellView(window: window)
                     }
                 }
             }
         }
-        .padding(12)
+        .padding(8)
         .background(Color(nsColor: .controlBackgroundColor))
-        .cornerRadius(10)
+        .cornerRadius(9)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(account.provider.displayName) account \(account.label)")
     }
 
     private var header: some View {
-        HStack(spacing: 6) {
-            ProviderLogoView(provider: account.provider)
+        HStack(spacing: 5) {
+            ProviderLogoView(provider: account.provider, size: 12)
 
             Text(account.label)
-                .font(.subheadline)
+                .font(.caption)
                 .fontWeight(.semibold)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -56,45 +60,41 @@ struct AccountCardView: View {
 
             if let planLabel = account.planLabel {
                 Text(planLabel)
-                    .font(.caption2)
-                    .fontWeight(.medium)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
+                    .font(.system(size: 9, weight: .medium))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
                     .background(account.provider.accentColor.opacity(0.15))
                     .foregroundColor(account.provider.accentColor)
-                    .cornerRadius(5)
+                    .cornerRadius(4)
             }
         }
     }
 }
 
-/// A single quota window: label, remaining percentage, bar, reset time.
-struct WindowRowView: View {
+/// A single quota window, compact enough to sit two-up in the popover.
+struct WindowCellView: View {
     let window: UsageWindow
 
     private var limit: UsageLimit { window.limit }
 
+    private var isAtRisk: Bool {
+        guard let duration = window.windowDuration else { return false }
+        return limit.isAtRisk(windowDuration: duration)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 3) {
                 Text(window.label)
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
 
-                if let duration = window.windowDuration, limit.isAtRisk(windowDuration: duration) {
-                    Image(systemName: "flame.fill")
-                        .font(.caption2)
-                        .foregroundColor(.orange)
-                        .help("You may hit this limit before it resets")
-                        .accessibilityLabel("At risk of hitting limit")
-                }
+                Spacer(minLength: 2)
 
-                Spacer(minLength: 4)
-
-                Text("\(Int(limit.remaining))% left")
-                    .font(.caption)
-                    .fontWeight(.semibold)
+                Text("\(Int(limit.remaining))%")
+                    .font(.system(size: 10, weight: .semibold))
                     .monospacedDigit()
                     .foregroundColor(limit.status.color)
             }
@@ -102,19 +102,31 @@ struct WindowRowView: View {
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.gray.opacity(0.2))
+                        .fill(Color.gray.opacity(0.22))
                     Capsule()
                         .fill(limit.status.color)
                         .frame(width: geometry.size.width * min(max(limit.remaining, 0) / 100, 1.0))
                 }
             }
-            .frame(height: 5)
+            .frame(height: 4)
 
-            Text("Resets \(limit.resetDescription)")
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .help(limit.resetTimeFormatted)
+            HStack(spacing: 2) {
+                if isAtRisk {
+                    Image(systemName: "flame.fill")
+                        .font(.system(size: 8))
+                        .foregroundColor(.orange)
+                        .accessibilityLabel("At risk of hitting limit")
+                }
+                Text(limit.compactResetDescription)
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary.opacity(0.8))
+            }
         }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
+        .background(Color.primary.opacity(0.04))
+        .cornerRadius(6)
+        .help("\(window.label) — resets \(limit.resetDescription) (\(limit.resetTimeFormatted))")
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(window.label): \(Int(limit.remaining))% remaining, \(limit.status.accessibilityDescription)")
         .accessibilityValue("Resets \(limit.resetDescription)")
@@ -124,7 +136,7 @@ struct WindowRowView: View {
 // MARK: - Preview
 
 #Preview {
-    VStack(spacing: 12) {
+    VStack(spacing: 8) {
         AccountCardView(
             account: AccountUsage(
                 id: "a",
@@ -133,33 +145,22 @@ struct WindowRowView: View {
                 planLabel: "Max",
                 windows: [
                     UsageWindow(
-                        id: "five_hour",
-                        label: "5-hour session",
-                        limit: UsageLimit(utilization: 95, resetAt: Date().addingTimeInterval(600)),
-                        windowDuration: Constants.Pacing.sessionWindow,
-                        isPrimary: true
+                        id: "five_hour", label: "5-hour session",
+                        limit: UsageLimit(utilization: 0, resetAt: Date().addingTimeInterval(5 * 3600)),
+                        windowDuration: Constants.Pacing.sessionWindow, isPrimary: true
                     ),
                     UsageWindow(
-                        id: "seven_day",
-                        label: "Weekly",
-                        limit: UsageLimit(utilization: 32, resetAt: Date().addingTimeInterval(86400 * 2)),
-                        windowDuration: Constants.Pacing.weeklyWindow,
-                        isPrimary: true
+                        id: "seven_day", label: "Weekly",
+                        limit: UsageLimit(utilization: 59, resetAt: Date().addingTimeInterval(13 * 3600)),
+                        windowDuration: Constants.Pacing.weeklyWindow, isPrimary: true
+                    ),
+                    UsageWindow(
+                        id: "seven_day_fable", label: "Weekly Fable",
+                        limit: UsageLimit(utilization: 98, resetAt: Date().addingTimeInterval(13 * 3600)),
+                        windowDuration: Constants.Pacing.weeklyWindow, isPrimary: true
                     ),
                 ],
                 errorMessage: nil
-            ),
-            showsAllWindows: false
-        )
-
-        AccountCardView(
-            account: AccountUsage(
-                id: "b",
-                provider: .codex,
-                label: "someone@example.com",
-                planLabel: "ProLite",
-                windows: [],
-                errorMessage: "Credential rejected (401). Re-authenticate it in the management panel."
             ),
             showsAllWindows: false
         )
